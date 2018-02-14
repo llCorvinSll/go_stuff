@@ -2,77 +2,103 @@ package main
 
 import (
 	"net/http"
-	"sync"
 	"fmt"
 	"math/rand"
 	"time"
+	"os"
+	"log"
+	"bufio"
 )
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
-	http.HandleFunc("/", handler)
+	strings := reader()
+
+	results := randomGenereator(strings, 3, 4)
+
+
+	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		fmt.Fprint(writer, <-results);
+	})
 
 	http.ListenAndServe("localhost:8000", nil)
 }
 
 
-const WORD_LEN = 26
 
-type WordCounter struct {
-	mut       sync.Mutex
-	words     []string
-	itemsLeft int
-}
-
-var initialWords = WordCounter{
-	words:[]string{
-		"Warty Warthog",
-		"Hoary Hedgehog",
-		"Breezy Badger",
-		"Dapper Drake",
-		"Edgy Eft",
-		"Feisty Fawn",
-		"Gutsy Gibbon",
-		"Hardy Heron",
-		"Intrepid Ibex",
-		"Jaunty Jackalope",
-		"Karmic Koala",
-		"Lucid Lynx",
-		"Maverick Meerkat",
-		"Natty Narwhal",
-		"Oneiric Ocelot",
-		"Precise Pangolin",
-		"Quantal Quetzal",
-		"Raring Ringtail",
-		"Saucy Salamander",
-		"Trusty Tahr",
-		"Utopic Unicorn",
-		"Vivid Vervet",
-		"Wily Werewolf",
-		"Xenial Xerus",
-		"Yakkety Yak",
-		"Zesty Zapus",
-	},
-	itemsLeft:WORD_LEN,
-}
+const NO_WORDS = "NO WORDS LEFT"
 
 
-func handler(writer http.ResponseWriter, request *http.Request) {
-	initialWords.mut.Lock();
-	defer initialWords.mut.Unlock()
 
-	if initialWords.itemsLeft <= 0 {
-		fmt.Fprint(writer, "no words");
 
-		return
+func reader() <-chan string {
+	out := make(chan string, 1)
+
+	file, err := os.Open("words.txt")
+	if err != nil {
+		log.Fatal("CANT open file")
 	}
 
-	nextIndex := rand.Intn(initialWords.itemsLeft)
+	scanner := bufio.NewScanner(file)
 
-	fmt.Fprintf(writer, "Next is %q", initialWords.words[nextIndex])
+	go func() {
+		for {
+			if scanner.Scan() {
+				out <- scanner.Text()
+			} else {
+				out <- NO_WORDS
+			}
+		}
+	}()
 
-	initialWords.words[nextIndex], initialWords.words[initialWords.itemsLeft-1] = initialWords.words[initialWords.itemsLeft-1], initialWords.words[nextIndex]
+	return  out
+}
 
-	initialWords.itemsLeft--
+func worker(results chan<- string, initialArray []string, strReader <- chan string, workerId int) {
+	for {
+		actualPoolLength := len(initialArray);
+
+		if actualPoolLength == 0 {
+			results <- "Sorry!"
+			continue
+		}
+
+		newIndex := rand.Intn(actualPoolLength)
+
+		res := initialArray[newIndex]
+
+		newItem := <-strReader
+
+		if newItem != NO_WORDS {
+			initialArray[newIndex] = newItem
+		} else {
+			initialArray = append(initialArray[:newIndex], initialArray[newIndex+1:]...)
+		}
+
+		fmt.Println("--------------------------------")
+		fmt.Printf("worker number %v \n", workerId)
+		fmt.Printf("%v \n", initialArray)
+		fmt.Println("--------------------------------")
+
+		results <- res
+	}
+}
+
+
+func randomGenereator(strings <-chan string, poolSize int, concurrency int) <-chan string {
+	out := make(chan string, 1)
+
+	for i := 0; i < concurrency; i++ {
+		var s []string
+
+		for j := 0; j < poolSize; j++ {
+			s = append(s, <- strings)
+		}
+
+		go worker(out, s, strings, i)
+	}
+
+
+	return out
 }
