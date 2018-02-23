@@ -1,66 +1,87 @@
 package main
 
 import (
-	"net/http"
-	"fmt"
-	"math/rand"
-	"time"
-	"os"
-	"log"
 	"bufio"
+	"flag"
+	"fmt"
+	"log"
+	"math/rand"
+	"net/http"
+	"os"
+	"runtime"
+	"time"
+)
+
+var (
+	concurrencyFactor int
+	host              = flag.String("host", "localhost:8000", "address to listen")
+	poolSize          = flag.Int("pool", 3, "number of items in each random pool")
+	sourceFile        = flag.String("source", "words.txt", "file with items")
+	drainMessage      = flag.String("drain_message", "Sorry!!!", "answer then no values left")
 )
 
 func main() {
+	flag.Parse()
+	concurrencyFactor = runtime.NumCPU()
 	rand.Seed(time.Now().UnixNano())
 
-	strings := reader()
+	log.Printf("listening address [%v]", *host)
+	log.Printf("number of pools [%v]", concurrencyFactor)
+	log.Printf("poolsize [%v]", *poolSize)
 
-	results := randomGenereator(strings, 3, 4)
+	strings := reader(sourceFile)
 
+	results := randomGenerator(strings, *poolSize, concurrencyFactor)
 
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		fmt.Fprint(writer, <-results);
+		fmt.Fprint(writer, <-results)
 	})
 
-	http.ListenAndServe("localhost:8000", nil)
+	log.Fatal(http.ListenAndServe(*host, nil))
 }
 
-
-
-const NO_WORDS = "NO WORDS LEFT"
-
-
-
-
-func reader() <-chan string {
+func reader(path *string) <-chan string {
 	out := make(chan string, 1)
 
-	file, err := os.Open("words.txt")
+	file, err := os.OpenFile(*path, os.O_RDONLY, 0644)
 	if err != nil {
-		log.Fatal("CANT open file")
+		log.Fatalf("can't open file [%v]", *path)
+	} else {
+		log.Printf("source file opened successful [%v]", *path)
 	}
 
 	scanner := bufio.NewScanner(file)
 
 	go func() {
+		defer func() {
+			err := file.Close()
+			if err != nil {
+				log.Fatalf("fail to close file [%v] /n", file.Name())
+			} else {
+				log.Printf("file closed successfuly [%v] \n", file.Name())
+			}
+
+			close(out)
+		}()
+
 		for {
 			if scanner.Scan() {
 				out <- scanner.Text()
 			} else {
-				out <- NO_WORDS
+				return
 			}
 		}
 	}()
 
-	return  out
+	return out
 }
 
-func worker(results chan<- string, initialArray []string, strReader <- chan string, workerId int) {
+func worker(results chan<- string, initialArray []string, strReader <-chan string, workerId int) {
 	for {
-		actualPoolLength := len(initialArray);
+		actualPoolLength := len(initialArray)
 
 		if actualPoolLength == 0 {
-			results <- "Sorry!"
+			results <- *drainMessage
 			continue
 		}
 
@@ -68,37 +89,32 @@ func worker(results chan<- string, initialArray []string, strReader <- chan stri
 
 		res := initialArray[newIndex]
 
-		newItem := <-strReader
+		newItem, err := <-strReader
 
-		if newItem != NO_WORDS {
+		if err {
 			initialArray[newIndex] = newItem
 		} else {
 			initialArray = append(initialArray[:newIndex], initialArray[newIndex+1:]...)
 		}
 
-		fmt.Println("--------------------------------")
-		fmt.Printf("worker number %v \n", workerId)
-		fmt.Printf("%v \n", initialArray)
-		fmt.Println("--------------------------------")
+		log.Printf("worker[%v] cap - %v \n", workerId, len(initialArray))
 
 		results <- res
 	}
 }
 
-
-func randomGenereator(strings <-chan string, poolSize int, concurrency int) <-chan string {
+func randomGenerator(strings <-chan string, poolSize int, concurrency int) <-chan string {
 	out := make(chan string, 1)
 
 	for i := 0; i < concurrency; i++ {
 		var s []string
 
 		for j := 0; j < poolSize; j++ {
-			s = append(s, <- strings)
+			s = append(s, <-strings)
 		}
 
 		go worker(out, s, strings, i)
 	}
-
 
 	return out
 }
